@@ -28,7 +28,7 @@ public class AuditLog {
     @Column
     private Long targetId;
 
-    @Column(length = 500)
+    @Column(columnDefinition = "TEXT")
     private String details;
 
     @Column(length = 100)

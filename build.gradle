@@ -6,6 +6,7 @@ plugins {
 
 group = 'com.java_web_service_qlkh_cdda'
 version = '1.0.0'
+
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
@@ -62,6 +63,11 @@ tasks.named('test') {
     useJUnitPlatform()
 }
 
+// Đảm bảo Lombok + MapStruct chạy đúng thứ tự
 compileJava {
+    options.compilerArgs = [
+            '-Amapstruct.suppressGeneratorTimestamp=true',
+            '-Amapstruct.defaultComponentModel=spring'
+    ]
     options.annotationProcessorPath = configurations.annotationProcessor
 }

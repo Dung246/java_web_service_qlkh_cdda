@@ -27,7 +27,7 @@ public class Course {
     @Column(nullable = false, length = 200)
     private String courseName;
 
-    @Column(length = 1000)
+    @Column(columnDefinition = "TEXT")
     private String description;
 
     @Column(nullable = false)

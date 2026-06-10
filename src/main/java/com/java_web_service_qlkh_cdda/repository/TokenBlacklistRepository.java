@@ -13,8 +13,16 @@ import java.time.LocalDateTime;
 @Repository
 public interface TokenBlacklistRepository extends JpaRepository<TokenBlacklist, Long> {
 
-    boolean existsByTokenString(String tokenString);
+    /**
+     * Kiểm tra token có trong blacklist không
+     * Dùng @Query thay vì existsByTokenString để tối ưu query
+     */
+    @Query("SELECT COUNT(t) > 0 FROM TokenBlacklist t WHERE t.tokenString = :token")
+    boolean existsByTokenString(@Param("token") String tokenString);
 
+    /**
+     * Xoá các token đã hết hạn — chạy định kỳ bởi ScheduledTasks
+     */
     @Modifying
     @Transactional
     @Query("DELETE FROM TokenBlacklist t WHERE t.expiresAt < :now")

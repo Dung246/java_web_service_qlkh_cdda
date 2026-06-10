@@ -42,7 +42,8 @@ public class Submission {
     @Column
     private Double score;
 
-    @Column(length = 2000)
+    // TEXT thay vì VARCHAR(2000) — tránh vấn đề với charset
+    @Column(columnDefinition = "TEXT")
     private String feedback;
 
     @Enumerated(EnumType.STRING)

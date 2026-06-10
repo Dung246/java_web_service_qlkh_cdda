@@ -18,7 +18,12 @@ public class TokenBlacklist {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false, unique = true, length = 1000)
+    /**
+     * JWT token dài ~400-600 ký tự
+     * utf8mb4 = 4 bytes/char → 700 * 4 = 2800 bytes < giới hạn MySQL InnoDB 3072 bytes
+     * KHÔNG dùng VARCHAR(1000) vì 1000*4=4000 > 3072 → lỗi "key too long"
+     */
+    @Column(nullable = false, unique = true, length = 700)
     private String tokenString;
 
     @Column(nullable = false)

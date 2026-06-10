@@ -24,7 +24,7 @@ public class Assignment {
     @Column(nullable = false, length = 200)
     private String title;
 
-    @Column(length = 2000)
+    @Column(columnDefinition = "TEXT")
     private String description;
 
     @Column(nullable = false)
