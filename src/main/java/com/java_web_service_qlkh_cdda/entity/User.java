@@ -57,7 +57,4 @@ public class User {
 
     @OneToMany(mappedBy = "gradedBy", fetch = FetchType.LAZY)
     private List<Submission> gradedSubmissions;
-
-    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
-    private List<TokenBlacklist> blacklistedTokens;
 }

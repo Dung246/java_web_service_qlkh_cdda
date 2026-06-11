@@ -1,18 +1,20 @@
 package com.java_web_service_qlkh_cdda.service.impl;
 
-import com.java_web_service_qlkh_cdda.dto.request.*;
+import com.java_web_service_qlkh_cdda.dto.request.ChangePasswordRequest;
+import com.java_web_service_qlkh_cdda.dto.request.ForgotPasswordRequest;
+import com.java_web_service_qlkh_cdda.dto.request.RegisterRequest;
+import com.java_web_service_qlkh_cdda.dto.request.ResetPasswordRequest;
 import com.java_web_service_qlkh_cdda.dto.response.AuthResponse;
-import com.java_web_service_qlkh_cdda.entity.TokenBlacklist;
 import com.java_web_service_qlkh_cdda.entity.User;
 import com.java_web_service_qlkh_cdda.enums.RoleEnum;
 import com.java_web_service_qlkh_cdda.exception.DuplicateResourceException;
 import com.java_web_service_qlkh_cdda.exception.InvalidStateException;
 import com.java_web_service_qlkh_cdda.exception.ResourceNotFoundException;
-import com.java_web_service_qlkh_cdda.repository.TokenBlacklistRepository;
 import com.java_web_service_qlkh_cdda.repository.UserRepository;
 import com.java_web_service_qlkh_cdda.security.CustomUserDetails;
 import com.java_web_service_qlkh_cdda.security.CustomUserDetailsService;
 import com.java_web_service_qlkh_cdda.service.AuthService;
+import com.java_web_service_qlkh_cdda.service.TokenBlacklistService;
 import com.java_web_service_qlkh_cdda.util.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -23,8 +25,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
-import java.time.ZoneId;
+import java.util.Date;
 
 @Service
 @RequiredArgsConstructor
@@ -34,7 +35,7 @@ public class AuthServiceImpl implements AuthService {
     private final AuthenticationManager authenticationManager;
     private final JwtUtil jwtUtil;
     private final CustomUserDetailsService userDetailsService;
-    private final TokenBlacklistRepository tokenBlacklistRepository;
+    private final TokenBlacklistService tokenBlacklistService; // ✅ Redis thay DB
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
 
@@ -42,7 +43,6 @@ public class AuthServiceImpl implements AuthService {
     @Override
     @Transactional
     public AuthResponse login(String username, String password) {
-        // Spring Security xác thực — ném BadCredentialsException nếu sai
         authenticationManager.authenticate(
                 new UsernamePasswordAuthenticationToken(username, password)
         );
@@ -50,11 +50,10 @@ public class AuthServiceImpl implements AuthService {
         UserDetails userDetails = userDetailsService.loadUserByUsername(username);
         CustomUserDetails customUser = (CustomUserDetails) userDetails;
 
-        // Tạo cả 2 token
         String accessToken  = jwtUtil.generateAccessToken(userDetails);
         String refreshToken = jwtUtil.generateRefreshToken(userDetails);
 
-        log.info("[AUTH] User '{}' logged in with role '{}'", username,
+        log.info("[AUTH] Login success: '{}' role='{}'", username,
                 customUser.getAuthorities().iterator().next().getAuthority());
 
         return buildAuthResponse(customUser, accessToken, refreshToken);
@@ -64,8 +63,8 @@ public class AuthServiceImpl implements AuthService {
     @Override
     @Transactional
     public AuthResponse refreshToken(String refreshToken) {
-        // Kiểm tra refresh token có bị revoke chưa
-        if (tokenBlacklistRepository.existsByTokenString(refreshToken)) {
+        // ✅ Kiểm tra Redis thay vì query DB
+        if (tokenBlacklistService.isBlacklisted(refreshToken)) {
             throw new InvalidStateException("Refresh token has been revoked. Please login again.");
         }
 
@@ -73,65 +72,66 @@ public class AuthServiceImpl implements AuthService {
         try {
             username = jwtUtil.extractUsername(refreshToken);
         } catch (Exception e) {
-            throw new InvalidStateException("Invalid refresh token format.");
+            throw new InvalidStateException("Invalid refresh token.");
         }
 
         UserDetails userDetails = userDetailsService.loadUserByUsername(username);
 
         if (!jwtUtil.isTokenValid(refreshToken, userDetails)) {
-            throw new InvalidStateException("Refresh token is expired or invalid. Please login again.");
+            throw new InvalidStateException("Refresh token expired or invalid. Please login again.");
         }
 
         CustomUserDetails customUser = (CustomUserDetails) userDetails;
-
-        // Sinh AccessToken mới, giữ nguyên RefreshToken cũ (Refresh Token Rotation tuỳ chọn)
         String newAccessToken = jwtUtil.generateAccessToken(userDetails);
 
         log.info("[AUTH] Token refreshed for user '{}'", username);
         return buildAuthResponse(customUser, newAccessToken, refreshToken);
     }
 
-    // ─── UC-03: LOGOUT — BLACKLIST CẢ 2 TOKEN ──────────────────────────────────
+    // ─── UC-03: LOGOUT — BLACKLIST QUA REDIS ──────────────────────────────────
     @Override
     @Transactional
     public void logout(String accessToken, String refreshToken) {
-        revokeToken(accessToken);
-        revokeToken(refreshToken);
-        log.info("[AUTH] User logged out — both tokens revoked");
+        revokeTokenToRedis(accessToken);
+        revokeTokenToRedis(refreshToken);
+        log.info("[AUTH] Logout — both tokens blacklisted in Redis");
     }
 
     /**
-     * Helper: blacklist một token bất kỳ (access hoặc refresh)
+     * Tính TTL còn lại của token rồi SET vào Redis với EXPIRE đúng bằng thời gian đó.
+     * Redis sẽ TỰ XÓA key khi hết TTL → bộ nhớ không phình to.
+     *
+     * Ví dụ: accessToken còn 900 giây → Redis SET key EX 900
+     *        Sau 900s Redis tự EXPIRE → không tồn tại nữa
      */
-    private void revokeToken(String token) {
+    private void revokeTokenToRedis(String token) {
         if (token == null || token.isBlank()) return;
 
-        // Strip "Bearer " prefix nếu có
+        // Strip "Bearer " nếu có
         if (token.startsWith("Bearer ")) {
             token = token.substring(7);
         }
         if (token.isBlank()) return;
 
-        // Không blacklist nếu đã tồn tại
-        if (tokenBlacklistRepository.existsByTokenString(token)) return;
+        // Đã blacklist rồi → bỏ qua
+        if (tokenBlacklistService.isBlacklisted(token)) return;
 
         try {
-            LocalDateTime expiresAt = jwtUtil.extractExpiration(token)
-                    .toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime();
+            Date expiration = jwtUtil.extractExpiration(token);
+            long ttlMillis  = expiration.getTime() - System.currentTimeMillis();
+
+            if (ttlMillis <= 0) {
+                // Token đã hết hạn tự nhiên → không cần blacklist
+                log.debug("[AUTH] Token already expired, skip blacklist");
+                return;
+            }
 
             String username = jwtUtil.extractUsername(token);
-            User user = userRepository.findByUsername(username).orElse(null);
+            // ✅ SET vào Redis với TTL chính xác
+            tokenBlacklistService.blacklistToken(token, username, ttlMillis);
 
-            TokenBlacklist blacklisted = TokenBlacklist.builder()
-                    .tokenString(token)
-                    .revokedAt(LocalDateTime.now())
-                    .expiresAt(expiresAt)
-                    .user(user)
-                    .build();
-            tokenBlacklistRepository.save(blacklisted);
-            log.debug("[AUTH] Token revoked for user '{}'", username);
         } catch (Exception e) {
-            log.warn("[AUTH] Could not revoke token: {}", e.getMessage());
+            log.warn("[AUTH] Could not revoke token to Redis: {}", e.getMessage());
         }
     }
 
@@ -151,7 +151,7 @@ public class AuthServiceImpl implements AuthService {
                 .passwordHash(passwordEncoder.encode(request.getPassword()))
                 .email(request.getEmail())
                 .fullName(request.getFullName())
-                .role(RoleEnum.STUDENT)   // Đăng ký public luôn là STUDENT
+                .role(RoleEnum.STUDENT)
                 .isActive(true)
                 .build();
 
@@ -159,7 +159,7 @@ public class AuthServiceImpl implements AuthService {
         log.info("[AUTH] New STUDENT registered: '{}'", request.getUsername());
     }
 
-    // ─── FR-10: ĐỔI MẬT KHẨU ──────────────────────────────────────────────────
+    // ─── FR-10: ĐỔI MẬT KHẨU ─────────────────────────────────────────────────
     @Override
     @Transactional
     public void changePassword(String username, ChangePasswordRequest request) {
@@ -179,45 +179,36 @@ public class AuthServiceImpl implements AuthService {
         log.info("[AUTH] Password changed for user '{}'", username);
     }
 
-    // ─── FR-10: QUÊN MẬT KHẨU ─────────────────────────────────────────────────
+    // ─── FR-10: QUÊN MẬT KHẨU ────────────────────────────────────────────────
     @Override
     @Transactional(readOnly = true)
     public void forgotPassword(String email) {
-        // Kiểm tra email tồn tại
         userRepository.findByEmail(email)
-                .orElseThrow(() -> new ResourceNotFoundException("No account found with email: " + email));
-
-        // Production: sinh reset token, lưu DB, gửi email
-        // Demo: chỉ log
-        log.info("[AUTH] Password reset requested for email '{}'", email);
+                .orElseThrow(() -> new ResourceNotFoundException("No account with email: " + email));
+        log.info("[AUTH] Password reset requested for '{}'", email);
     }
 
-    // ─── FR-10: RESET MẬT KHẨU ────────────────────────────────────────────────
+    // ─── FR-10: RESET MẬT KHẨU ───────────────────────────────────────────────
     @Override
     @Transactional
     public void resetPassword(ResetPasswordRequest request) {
         if (!request.getNewPassword().equals(request.getConfirmPassword())) {
             throw new InvalidStateException("Passwords do not match.");
         }
-        // Production: validate reset token từ DB/Redis
         log.info("[AUTH] Password reset completed");
     }
 
-    // ─── HELPER ────────────────────────────────────────────────────────────────
+    // ─── HELPER ───────────────────────────────────────────────────────────────
     private AuthResponse buildAuthResponse(CustomUserDetails user,
                                            String accessToken, String refreshToken) {
-        // Lấy role từ UserDetails — không query DB lần 2
         String roleStr = user.getAuthorities().stream()
                 .findFirst()
                 .map(a -> a.getAuthority().replace("ROLE_", ""))
                 .orElse("");
 
         RoleEnum role;
-        try {
-            role = RoleEnum.valueOf(roleStr);
-        } catch (Exception e) {
-            role = null;
-        }
+        try { role = RoleEnum.valueOf(roleStr); }
+        catch (Exception e) { role = null; }
 
         return AuthResponse.builder()
                 .userId(user.getId())
